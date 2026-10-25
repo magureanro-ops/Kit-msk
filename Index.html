@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kit MSK Pro — Scan CI · GDPR · Vocal · Plan terapeutic</title>
+<script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body class="[font-family:'Inter',system-ui,sans-serif] bg-slate-100 text-slate-800 antialiased">
+
+<!-- ============ HEADER ============ -->
+<header class="bg-white border-b border-slate-200 sticky top-0 z-40">
+  <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-4 flex-wrap">
+    <button onclick="nav('home')" class="flex items-center gap-2 shrink-0">
+      <span class="w-9 h-9 rounded-full bg-teal-600 flex items-center justify-center">
+        <img src="https://unpkg.com/lucide-static@1.44.0/icons/heart-pulse.svg" class="w-5 h-5 brightness-0 invert" width="20" height="20" alt="">
+      </span>
+      <span class="font-extrabold text-slate-900">Kit MSK <span class="text-teal-600">Pro</span></span>
+    </button>
+    <nav class="flex gap-1 text-sm font-medium ml-auto flex-wrap">
+      <button onclick="nav('home')" class="nav-btn px-3 py-2 rounded-lg hover:bg-slate-100">Acasă</button>
+      <button onclick="nav('patients')" class="nav-btn px-3 py-2 rounded-lg hover:bg-slate-100">Pacienți</button>
+      <button onclick="nav('newPatient')" class="nav-btn px-3 py-2 rounded-lg hover:bg-slate-100 text-teal-700 font-semibold">+ Pacient</button>
+      <button onclick="nav('newAssessment')" class="nav-btn px-3 py-2 rounded-lg hover:bg-slate-100">+ Evaluare</button>
+      <button onclick="nav('export')" class="nav-btn px-3 py-2 rounded-lg hover:bg-slate-100">Export / ColMed</button>
+    </nav>
+  </div>
+</header>
+
+<main id="app" class="max-w-6xl mx-auto px-4 py-6"></main>
+
+<footer class="text-center text-xs text-slate-400 pb-8">
+  Kit MSK Pro · v0.2 · datele sunt salvate local în browser · OCR: Tesseract.js (încărcat doar la cerere)
+</footer>
+
+<script>
+/* =====================================================================
+   KIT MSK PRO v0.2
+   Module: Scan CI (OCR), GDPR, scriere vocală, match diagnostic→proceduri,
+           plan terapeutic cu bifare, export CSV/JSON pentru ColMed.
+   ===================================================================== */
+
+/* ---------- STARE & STOCARE ---------- */
+const DB_KEY = 'msk_pro_db_v02';
+let DB = loadDB();
+let VIEW = 'home';
+let currentPatientId = null;
+let currentForm = 'odi';
+let currentAssessment = null;
+let ocrLoading = false;
+
+function loadDB(){
+  try { const d = JSON.parse(localStorage.getItem(DB_KEY)); if(d && d.patients && d.assessments) return d; } catch(e){}
+  return { patients: [], assessments: [] };
+}
+function saveDB(){ try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } catch(e){} }
+function uid(p){ return (p||'p') + Date.now() + Math.floor(Math.random()*9999); }
+function fmtDate(ts){ const d=new Date(ts); return d.toLocaleDateString('ro-RO') + ' ' + d.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'}); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function getPatient(id){ return DB.patients.find(p=>p.id===id); }
+function getAssessments(pid){ return DB.assessments.filter(a=>a.patientId===pid).sort((a,b)=>a.date-b.date); }
+
+/* ---------- CATALOG PROCEDURI ---------- */
+const PROCEDURES = [
+  { id:'kine', label:'Kinetoterapie manuală', hint:'Mobilizări, tehnici de țesut moale' },
+  { id:'ex',   label:'Exerciții terapeutice', hint:'Program activ de întărire și mobilitate' },
+  { id:'gym',  label:'Gimnastică medicală', hint:'Exerciții de grup/individuale supravegheate' },
+  { id:'tens', label:'TENS (electroterapie)', hint:'Analgezie, relaxare musculară' },
+  { id:'us',   label:'Ultrasunete', hint:'Terapie cu ultrasunete, efect termic I' },
+  { id:'laser',label:'Laserterapie', hint:'Biostimulare, vindecare tisulară' },
+  { id:'taping',label:'Kinesio Taping', hint:'Suport funcțional, drenaj, analgezie' },
+  { id:'massaj',label:'Masaj terapeutic', hint:'Relaxare, tonus, pregătire efort' },
+  { id:'proprio',label:'Antrenament proprioceptiv', hint:'Echilibru, control neuromuscular (sportiv/postoperatoriu)' },
+  { id:'educ', label:'Educație pacient + program la domiciliu', hint:'Autonomie, prevenție recidivă' }
+];
+
+/* ---------- BAZĂ DE CUNOȘTINȚE: diagnostic → protocol + proceduri ---------- */
+const KNOWLEDGE_BASE = [
+  {
+    keywords:['hernie','disc','lombar','protruzie','sciatic'],
+    protocol:'Protocol recuperare lombară (postoperatoriu / conservator)',
+    procedures:['kine','ex','gym','tens','educ'],
+    instructions:'Evitați flexia bruscă și ridicarea greutăților în primele săptămâni. Stabilizare progresivă a core-ului. Evitarea ortostatismului prelungit. Reevaluare la 6 săptămâni.'
+  },
+  {
+    keywords:['cervical','gât','coloana cervicala','coloană cervicală'],
+    protocol:'Protocol recuperare cervicală',
+    procedures:['kine','massaj','ex','tens','educ'],
+    instructions:'Postură ergonomică, pauze în timpul lucrului la birou, mișcări active lente. Evitați mișcările bruște din flexie-extensie.'
+  },
+  {
+    keywords:['ligamentoplastie','lca','cruciat','ligament încrucișat','menisc','postoperatoriu genunchi'],
+    protocol:'Protocol recuperare postoperatorie genunchi / ligamentoplastie',
+    procedures:['kine','ex','proprio','gym','c'],
+    instructions:'Protocoale în faze (0–2 săpt, 2–6 săpt, 6–12 săpt). Fără mers lung, fără rotații bruște până la consolidare. Reeducare proprioceptivă esențială.'
+  },
+  {
+    keywords:['umăr','umăr','cot','mână','membru superior','supraspinos','coaf'],
+    protocol:'Protocol recuperare membru superior (umăr/cot/mână)',
+    procedures:['kine','ex','tens','laser','taping'],
+    instructions:'Mobilizare pasivă urmată de activă progresivă. Evitați ridicarea greutăților fără monitorizare. Respectați limitele de durere.'
+  },
+  {
+    keywords:['postoperatoriu','post operatoriu','recuperare post'],
+    protocol:'Protocol recuperare postoperatorie generic',
+    procedures:['kine','ex','gym','educ'],
+    instructions:'Plan individualizat în funcție de intervenție. Respectați indicațiile chirurgului (greutate permisă, amplitudine). Monitorizare la fiecare 2 săptămâni.'
+  },
+  {
+    keywords:['sportiv','sport','entorsă','entorsa','tendinită','tendinita','contractură','contractura'],
+    protocol:'Protocol recuperare sportivă',
+    procedures:['kine','ex','proprio','gym','taping','massaj'],
+    instructions:'Reeducare progresivă la efort. Teste funcționale înainte de revenirea la sport. Prevenția recidivei prin antrenament de forță.'
+  }
+];
+
+function suggestPlan(diagnosis){
+  const d = (diagnosis||'').toLowerCase();
+  if(!d) return { protocol:'', procedures:['kine','ex','educ'], instructions:'Completați diagnosticul pentru recomandări automate.' };
+  for(const e of KNOWLEDGE_BASE){
+    if(e.keywords.some(k=>d.includes(k))){
+      return { protocol:e.protocol, procedures:e.procedures, instructions:e.instructions };
+    }
+  }
+  return { protocol:'Plan terapeutic individualizat', procedures:['kine','ex','educ'], instructions:'Diagnosticul nu a fost potrivit automat cu un protocol existent. Completați manual planul.' };
+}
+
+/* ---------- FORMULARE EVALUARE (compact) ---------- */
+const FORMS = {
+  vas: {
+    title:'VAS — Durere (0–10)', color:'bg-cyan-50 border-cyan-200',
+    intro:'Cereți pacientului să noteze intensitatea durerii pe o scară 0 (fără durere) – 10 (maximă).',
+    items:['În acest moment','Media ultimelor 7 zile','Maxima ultimelor 7 zile'],
+    max:10,
+    calculate:(ans)=>({ score:ans[0], interpretation:'VAS: '+ans[0]+' / 10 (acum)' })
+  },
+  odi: {
+    title:'ODI — Oswestry Disability Index (lombară)', color:'bg-teal-50 border-teal-200',
+    intro:'10 itemi, scor 0–5 fiecare (0 = fără limitare, 5 = limitare maximă). Ghid: 0–20% minimă, 21–40% moderată, 41–60% severă, >60% imobilizantă.',
+    items:['1. Intensitatea durerii','2. Îngrijirea personală','3. Ridicarea greutăților','4. Mersul','5. Șezutul','6. Statul în picioare','7. Somnul','8. Viața sexuală','9. Viața socială','10. Călătoriile'],
+    max:5,
+    calculate:(ans)=>{ const t=ans.reduce((a,b)=>a+b,0); const p=Math.round(t*2); let s=p<=20?'Dizabilitate minimă':p<=40?'Moderată':p<=60?'Severă':'Imobilizantă'; return {score:p, interpretation:s+' ('+p+'%)'}; }
+  },
+  ndi: {
+    title:'NDI — Neck Disability Index (cervicală)', color:'bg-teal-50 border-teal-200',
+    intro:'10 itemi, scor 0–5 fiecare (0 = fără limitare, 5 = limitare maximă).',
+    items:['1. Intensitatea durerii','2. Îngrijirea personală','3. Ridicarea obiectelor','4. Cititul','5. Durerile de cap','6. Concentrarea','7. Munca','8. Condusul mașinii','9. Somnul','10. Recreația'],
+    max:5,
+    calculate:(ans)=>{ const t=ans.reduce((a,b)=>a+b,0); const p=Math.round(t*2); let s=p<=20?'Dizabilitate minimă':p<=40?'Moderată':p<=60?'Severă':'Imobilizantă'; return {score:p, interpretation:s+' ('+p+'%)'}; }
+  },
+  lefs: {
+    title:'LEFS — Lower Extremity Functional Scale', color:'bg-emerald-50 border-emerald-200',
+    intro:'20 de activități, scor 0–4 fiecare (0 = imposibil, 4 = fără dificultate). Scor maxim 80.',
+    items:['1. Munca obișnuită / casnice / școală','2. Hobby-uri, sport','3. Intrat/ieșit din cadă','4. Mersul între camere','5. Încălțatul','6. Ghemuitul','7. Ridicatul unui obiect de pe podea','8. Treburi ușoare','9. Treburi grele','10. Intrat/ieșit din mașină','11. Mers distanțe lungi','12. Mers distanțe scurte','13. Urcat/coborât 10 trepte','14. Stat în picioare 1h','15. Stat pe scaun 1h','16. Alergat pe drept','17. Alergat pe denivelat','18. Viraje bruște la alergare','19. Sărit într-un picior','20. Întorsul în pat'],
+    max:4,
+    calculate:(ans)=>{ const t=ans.reduce((a,b)=>a+b,0); let s=t>=65?'Funcție foarte bună':t>=50?'Bună':t>=35?'Moderată':t>=20?'Limitată':'Sever limitată'; return {score:t, interpretation:s+' ('+t+'/80)'}; }
+  },
+  quickdash: {
+    title:'QuickDASH (membru superior)', color:'bg-indigo-50 border-indigo-200',
+    intro:'11 itemi, scor 1–5 (1 = fără dificultate, 5 = imposibil). Formula: ((suma/11)−1)×25.',
+    items:['1. Deschideți un borcan','2. Treburi casnice grele','3. Cărați o pungă/servietă','4. Vă spălați pe spate','5. Folosiți cuțitul','6. Activitate recreativă cu forță','7. Împingeți/trageți obiecte grele','8. Durere/junghi la braț, umăr, mână','9. Furnicături/amorțeli','10. Dificultate la somn','11. Vă simțiți mai puțin capabil'],
+    max:5,
+    calculate:(ans)=>{ const t=ans.reduce((a,b)=>a+b,0); const sc=Math.round(((t/11)-1)*25*10)/10; let s=sc<=20?'Minimă':sc<=40?'Moderată':sc<=60?'Severă':'Foarte severă'; return {score:sc, interpretation:s+' ('+sc+'/100)'}; }
+  },
+  nps: {
+    title:'Satisfacție + NPS', color:'bg-amber-50 border-amber-200',
+    intro:'Pe o scară 0–10, cât de probabil este să recomandați clinica? (9–10 promotor, 7–8 pasiv, 0–6 detractor).',
+    items:['Probabilitatea de recomandare către un prieten/coleg'],
+    max:10,
+    calculate:(ans)=>{ const n=ans[0]; const s=n>=9?'Promotor':n>=7?'Pasiv':'Detractor'; return {score:n, interpretation:s+' ('+n+'/10)'}; }
+  }
+};
+
+/* ---------- NAVIGARE ---------- */
+function nav(view, params){
+  VIEW = view;
+  if(params && params.patientId) currentPatientId = params.patientId;
+  if(view==='newAssessment') currentAssessment = null;
+  render();
+}
+function render(){
+  const app = document.getElementById('app');
+  if(VIEW==='home') app.innerHTML = viewHome();
+  else if(VIEW==='patients') app.innerHTML = viewPatients();
+  else if(VIEW==='newPatient') app.innerHTML = viewNewPatient();
+  else if(VIEW==='patient') app.innerHTML = viewPatient();
+  else if(VIEW==='newAssessment') app.innerHTML = viewNewAssessment();
+  else if(VIEW==='assessment') app.innerHTML = viewAssessment();
+  else if(VIEW==='export') app.innerHTML = viewExport();
+  else app.innerHTML = viewHome();
+}
+
+/* =====================================================================
+   ACASĂ
+   ===================================================================== */
+function viewHome(){
+  const totalP = DB.patients.length;
+  const totalA = DB.assessments.length;
+  return `
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="lg:col-span-2 space-y-4">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+          <div class="flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-teal-50 flex items-center justify-center">
+              <img src="https://unpkg.com/lucide-static@1.44.0/icons/users.svg" class="w-5 h-5 text-teal-600" width="20" height="20" alt="">
+            </span>
+            <div><p class="text-2xl font-extrabold">${totalP}</p><p class="text-xs text-slate-500">Pacienți</p></div>
+          </div>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+          <div class="flex items-center gap-3">
+            <span class="w-10 h-10 rounded-xl bg-teal-50 flex items-center justify-center">
+              <img src="https://unpkg.com/lucide-static@1.44.0/icons/clipboard-list.svg" class="w-5 h-5 text-teal-600" width="20" height="20" alt="">
+            </span>
+            <div><p class="text-2xl font-extrabold">${totalA}</p><p class="text-xs text-slate-500">Evaluări</p></div>
+          </div>
+        </div>
+      </div>
+      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        <h3 class="font-bold text-slate-900 mb-3">Flux recomandat</h3>
+        <ol class="space-y-2.5 text-sm text-slate-600">
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-teal-600 text-white text-xs font-bold flex items-center justify-center shrink-0">1</span> <span><b>Scanare CI / fotografie</b> — la „+ Pacient”, pozezi buletinul și aplicația completează automat datele.</span></li>
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-teal-600 text-white text-xs font-bold flex items-center justify-center shrink-0">2</span> <span><b>GDPR</b> — consimțământul digital (bifă + nume) este obligatoriu la salvare.</span></li>
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-teal-600 text-white text-xs font-bold flex items-center justify-center shrink-0">3</span> <span><b>Evaluare</b> — alegi formularul (ODI, NDI, LEFS, QuickDASH, VAS, NPS); scorul se calculează automat.</span></li>
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-teal-600 text-white text-xs font-bold flex items-center justify-center shrink-0">4</span> <span><b>Plan terapeutic</b> — pe baza diagnosticului, aplicația propune protocolul și procedurile; tu bifezi ce se recomandă și adaugi instrucțiuni pentru kineto.</span></li>
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-teal-600 text-white text-xs font-bold flex items-center justify-center shrink-0">5</span> <span><b>Export</b> — CSV pentru ColMed/Excel acum; JSON pentru API-ul ColMed când va fi disponibil.</span></li>
+        </ol>
+      </div>
+    </div>
+    <div class="space-y-4">
+      <div class="bg-teal-600 rounded-2xl p-5 text-white shadow-sm">
+        <p class="font-bold text-sm mb-2">🎤 Scriere vocală</p>
+        <p class="text-xs leading-relaxed text-teal-50">La câmpurile cu iconița microfon (diagnostic, instrucțiuni, note) apasă pe microfon și dictează. Browser recomandat: Chrome/Edge.</p>
+      </div>
+      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm text-sm text-slate-600">
+        <p class="font-bold text-slate-900 mb-2">🔌 Integrare ColMed</p>
+        <p class="text-xs leading-relaxed">Acum: export CSV → import în ColMed. Când vei avea acces la API-ul ColMed, mini-app-ul va putea trimite automat planul terapeutic după consult. Vezi „Export / ColMed”.</p>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* =====================================================================
+   PACIENȚI
+   ===================================================================== */
+function viewPatients(){
+  return `
+  <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
+    <div>
+      <h2 class="text-2xl font-extrabold">Pacienți</h2>
+      <p class="text-sm text-slate-500 mt-0.5">${DB.patients.length} înregistrați</p>
+    </div>
+    <button onclick="nav('newPatient')" class="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition shadow-sm">
+      <img src="https://unpkg.com/lucide-static@1.44.0/icons/plus.svg" class="w-4 h-4 brightness-0 invert" width="16" height="16" alt=""> Pacient nou
+    </button>
+  </div>
+  ${DB.patients.length===0 ? `
+    <div class="bg-white rounded-2xl border-2 border-dashed border-slate-200 p-12 text-center">
+      <img src="https://unpkg.com/lucide-static@1.44.0/icons/user-plus.svg" class="w-12 h-12 mx-auto text-slate-300" width="48" height="48" alt="">
+      <p class="mt-3 font-semibold text-slate-500">Niciun pacient încă</p>
+      <p class="text-sm text-slate-400 mt-1">Adaugă primul pacient (cu scanare CI) pentru a începe.</p>
+    </div>` : `
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <th class="px-4 py-3 font-semibold">Pacient</th>
+              <th class="px-4 py-3 font-semibold">CNP</th>
+              <th class="px-4 py-3 font-semibold">Vârstă</th>
+              <th class="px-4 py-3 font-semibold">Evaluări</th>
+              <th class="px-4 py-3 font-semibold">GDPR</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            ${DB.patients.map(p=>{
+              const list = getAssessments(p.id);
+              return `<tr class="hover:bg-slate-50/60 transition">
+                <td class="px-4 py-3 font-semibold">${esc(p.name)}</td>
+                <td class="px-4 py-3 text-slate-500 font-mono text-xs">${esc(p.cnp||'—')}</td>
+                <td class="px-4 py-3 text-slate-500">${p.age||'—'}</td>
+                <td class="px-4 py-3"><span class="bg-teal-50 text-teal-700 text-xs font-bold px-2.5 py-1 rounded-full">${list.length}</span></td>
+                <td class="px-4 py-3">${p.gdpr && p.gdpr.accepted ? '<span class="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full"><img src="https://unpkg.com/lucide-static@1.44.0/icons/check.svg" class="w-3 h-3" width="12" height="12" alt=""> OK</span>' : '<span class="text-xs text-amber-600 font-semibold">Lipsă</span>'}</td>
+                <td class="px-4 py-3 text-right">
+                  <button onclick="nav('patient',{patientId:'${p.id}'})" class="text-xs font-semibold text-teal-700 hover:bg-teal-50 px-3 py-1.5 rounded-lg transition">Detalii</button>
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`}`;
+}
+
+/* =====================================================================
+   PACIENT NOU + SCANARE CI + GDPR
+   ===================================================================== */
+function viewNewPatient(){
+  return `
+  <div class="max-w-3xl mx-auto">
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="p-5 border-b border-slate-100 flex items-center gap-3">
+        <button onclick="nav('patients')" class="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center">
+          <img src="https://unpkg.com/lucide-static@1.44.0/icons/arrow-left.svg" class="w-4 h-4" width="16" height="16" alt="">
+        </button>
+        <div>
+          <h3 class="font-bold text-slate-900">Pacient nou</h3>
+          <p class="text-xs text-slate-500">Scanare CI sau completare manuală · GDPR obligatoriu</p>
+        </div>
+      </div>
+
+      <!-- SCANARE CI -->
+      <div class="p-5 border-b border-slate-100">
+        <p class="text-xs font-bold text-teal-700 uppercase tracking-wide mb-2">📷 Scanare carnet de identitate</p>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div class="border-2 border-dashed border-slate-300 rounded-xl p-4 flex flex-col items-center justify-center text-center">
+            <input type="file" id="ciFile" accept="image/*" capture="environment" class="hidden" onchange="scanID(this)">
+            <button onclick="document.getElementById('ciFile').click()" class="inline-flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition">
+              <img src="https://unpkg.com/lucide-static@1.44.0/icons/camera.svg" class="w-4 h-4 brightness-0 invert" width="16" height="16" alt=""> Fotografiază / Încarcă
+            </button>
+            <p class="text-[11px] text-slate-400 mt-2">Pozezi fața buletinului (zona cu datele). OCR-ul extrage automat: CNP, nume, serie, adresă.</p>
+          </div>
+          <div class="space-y-2">
+            <div id="ocrStatus" class="text-xs text-slate-500">OCR neîncărcat încă (se încarcă doar la cerere).</div>
+            <img id="scanPreview" class="hidden w-full max-h-44 object-cover rounded-xl border border-slate-200" alt="Previzualizare scanare">
+            <div class="text-[11px] text-slate-400">Dacă OCR-ul nu reușește, completează manual câmpurile de mai jos.</div>
+          </div>
+        </div>
+      </div>
+
+      <form onsubmit="addPatient(event)" class="p-5 space-y-4">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Nume *</label>
+            <input required name="name" id="pNume" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none text-sm transition">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Prenume *</label>
+            <input required name="firstName" id="pPrenume" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none text-sm transition">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">CNP</label>
+            <input name="cnp" id="pCnp" maxlength="13" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none text-sm transition font-mono">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Serie / Număr</label>
+            <div class="flex gap-2">
+              <input name="seria" id="pSeria" placeholder="Serie" class="w-1/3 px-3 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+              <input name="numar" id="pNumar" placeholder="Număr" class="w-2/3 px-3 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Data nașterii</label>
+            <input name="birthDate" id="pNastere" type="date" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Sex</label>
+            <select name="sex" id="pSex" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition bg-white">
+              <option value="M">Masculin</option>
+              <option value="F">Feminin</option>
+            </select>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Adresă</label>
+            <input name="address" id="pAdresa" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Telefon</label>
+            <input name="phone" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Email</label>
+            <input name="email" type="email" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Ocupație</label>
+            <input name="occupation" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Sport practicat</label>
+            <input name="sport" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Diagnostic / motivul prezentării
+              <button type="button" onclick="voiceInput('pDiagnostic')" class="ml-2 inline-flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-[11px] px-2.5 py-1 rounded-lg transition">
+                <img src="https://unpkg.com/lucide-static@1.44.0/icons/mic.svg" class="w-3.5 h-3.5" width="14" height="14" alt=""> Dictare vocală
+              </button>
+            </label>
+            <textarea name="diagnosis" id="pDiagnostic" rows="2" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition resize-y"></textarea>
+          </div>
+        </div>
+
+        <!-- GDPR -->
+        <div class="bg-slate-50 border border-slate-200 rounded-xl p-4">
+          <p class="text-xs font-bold text-slate-700 uppercase tracking-wide mb-2 flex items-center gap-2">
+            <img src="https://unpkg.com/lucide-static@1.44.0/icons/shield-check.svg" class="w-4 h-4 text-teal-600" width="16" height="16" alt=""> Consimțământ GDPR
+          </p>
+          <label class="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" id="gdprCheck" required class="mt-0.5 accent-teal-600 w-4 h-4">
+            <span class="text-xs text-slate-600 leading-relaxed">Sunt de acord cu prelucrarea datelor cu caracter personal conform Regulamentului (UE) 2016/679 (GDPR), cu stocarea lor în scop medical și cu utilizarea anonimizată a scorurilor în scopuri statistice/de prezentare.</span>
+          </label>
+          <div class="mt-3">
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Nume complet (semnătură digitală) *</label>
+            <input required name="gdprName" id="gdprName" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+          </div>
+          <p class="text-[11px] text-slate-400 mt-2">Semnătura digitală + dată sunt salvate împreună cu dosarul pacientului.</p>
+        </div>
+
+        <button type="submit" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold py-3 rounded-xl transition shadow-sm">
+          Salvează pacientul
+        </button>
+      </form>
+    </div>
+  </div>`;
+}
+
+/* ---------- SCANARE CI + OCR ---------- */
+function loadScript(url){
+  return new Promise((resolve,reject)=>{
+    if(window.Tesseract) return resolve();
+    const s = document.createElement('script');
+    s.src = url; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function scanID(input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const preview = document.getElementById('scanPreview');
+  preview.src = URL.createObjectURL(file);
+  preview.classList.remove('hidden');
+  const status = document.getElementById('ocrStatus');
+  status.className = 'text-xs text-teal-700 font-semibold';
+  status.textContent = 'Încărc motorul OCR (Tesseract.js)…';
+
+  try{
+    await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
+    status.textContent = 'Analizez imaginea… (limba română)';
+    const { data } = await Tesseract.recognize(file, 'ron', {
+      logger: m => { if(m.status==='recognizing text') status.textContent = 'OCR: ' + Math.round(m.progress*100) + '%'; }
+    });
+    fillFromOcr(data.text);
+    status.textContent = '✓ OCR finalizat. Verifică și corectează datele extrase.';
+    status.className = 'text-xs text-emerald-700 font-semibold';
+  }catch(e){
+    status.textContent = 'OCR nu a reușit (posibil offline sau imagine neclară). Completează manual.';
+    status.className = 'text-xs text-amber-600 font-semibold';
+  }
+}
+
+function fillFromOcr(text){
+  const lines = text.split('\n').map(s=>s.trim()).filter(Boolean);
+  const cnpM = text.match(/\b\d{13}\b/);
+  if(cnpM) setVal('pCnp', cnpM[0]);
+
+  // Seria / Număr
+  const serM = text.match(/seri[ae]?\s*[:.]?\s*([A-Z0-9]{1,3})/i);
+  if(serM) setVal('pSeria', serM[1]);
+  const nrM = text.match(/num[ăa]r?\s*[:.]?\s*(\d{3,9})/i);
+  if(nrM) setVal('pNumar', nrM[1]);
+
+  // Nume / Prenume
+  lines.forEach(ln=>{
+    const l = ln.toLowerCase();
+    if(l.includes('nume') && !l.includes('prenume')){
+      const v = ln.replace(/^[^:]*[:]\s*/,'').trim();
+      if(v && v.length < 60) setVal('pNume', v);
+    }
+    if(l.includes('prenume')){
+      const v = ln.replace(/^[^:]*[:]\s*/,'').trim();
+      if(v && v.length < 60) setVal('pPrenume', v);
+    }
+    if(l.includes('adres') || l.includes('domiciliu')){
+      const v = ln.replace(/^[^:]*[:]\s*/,'').trim();
+      if(v && v.length > 5){
+        const cur = document.getElementById('pAdresa').value;
+        setVal('pAdresa', cur ? cur + ' ' + v : v);
+      }
+    }
+  });
+
+  // Decodare CNP → sex + dată naștere
+  if(cnpM){
+    const cnp = cnpM[0];
+    const s = parseInt(cnp[0],10);
+    document.getElementById('pSex').value = (s % 2 === 1) ? 'M' : 'F';
+    const year = parseInt(cnp.slice(1,3),10);
+    const month = parseInt(cnp.slice(3,5),10);
+    const day = parseInt(cnp.slice(5,7),10);
+    let fullYear;
+    if(s===1||s===2) fullYear = 1900 + year;
+    else if(s===3||s===4) fullYear = 1800 + year;
+    else if(s===5||s===6) fullYear = 2000 + year;
+    else if(s===7||s===8) fullYear = 2000 + year;
+    else fullYear = 1900 + year;
+    if(month>=1 && month<=12 && day>=1 && day<=31){
+      const iso = fullYear + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+      setVal('pNastere', iso);
+    }
+  }
+}
+function setVal(id,val){ const el=document.getElementById(id); if(el && val) el.value = val; }
+
+/* ---------- SCRIERE VOCALĂ ---------- */
+let rec = null;
+function voiceInput(inputId){
+  const el = document.getElementById(inputId);
+  if(!el) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ alert('Browserul nu suportă recunoaștere vocală. Folosește Chrome sau Edge.'); return; }
+  if(rec){ try{rec.stop();}catch(e){} rec = null; return; }
+  rec = new SR();
+  rec.lang = 'ro-RO';
+  rec.interimResults = true;
+  rec.continuous = false;
+  rec.onresult = ev => {
+    let t='';
+    for(let i=0;i<ev.results.length;i++) t += ev.results[i][0].transcript;
+    el.value = t;
+  };
+  rec.onend = () => { rec = null; };
+  el.focus();
+  rec.start();
+}
+
+/* ---------- SALVARE PACIENT ---------- */
+function addPatient(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const gdprAccepted = document.getElementById('gdprCheck').checked;
+  const cnp = (fd.get('cnp')||'').trim();
+  const p = {
+    id: uid('p'),
+    name: ((fd.get('firstName')||'') + ' ' + (fd.get('name')||'')).trim(),
+    cnp: cnp,
+    seria: fd.get('seria')||'',
+    numar: fd.get('numar')||'',
+    birthDate: fd.get('birthDate')||'',
+    sex: fd.get('sex')||'M',
+    address: fd.get('address')||'',
+    phone: fd.get('phone')||'',
+    email: fd.get('email')||'',
+    occupation: fd.get('occupation')||'',
+    sport: fd.get('sport')||'',
+    diagnosis: fd.get('diagnosis')||'',
+    gdpr: {
+      accepted: gdprAccepted,
+      name: fd.get('gdprName')||'',
+      date: new Date().toISOString()
+    },
+    plan: null,
+    createdAt: Date.now()
+  };
+  if(!p.name){ alert('Numele este obligatoriu.'); return; }
+  if(!gdprAccepted){ alert('Consimțământul GDPR este obligatoriu.'); return; }
+  DB.patients.push(p);
+  saveDB();
+  nav('patient', {patientId:p.id});
+}
+
+/* =====================================================================
+   DETALII PACIENT + PLAN + INSTRUCȚIUNI KINETO
+   ===================================================================== */
+function viewPatient(){
+  const p = getPatient(currentPatientId);
+  if(!p) return '<div class="text-center py-12 text-slate-400">Pacientul nu a fost găsit.</div>';
+  const list = getAssessments(p.id);
+  const last = list[list.length-1];
+  const plan = p.plan;
+  return `
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4">
+      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        <div class="flex items-start justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-12 h-12 rounded-full bg-teal-100 flex items-center justify-center text-teal-700 font-extrabold text-lg">${esc((p.name||'?').charAt(0).toUpperCase())}</div>
+            <div>
+              <h3 class="font-extrabold text-slate-900 text-lg leading-tight">${esc(p.name)}</h3>
+              <p class="text-xs text-slate-500">${p.age?p.age+' ani · ':''}${p.sex==='M'?'Masculin':'Feminin'}</p>
+            </div>
+          </div>
+          <button onclick="if(confirm('Ștergi acest pacient?')){deletePatient('${p.id}')}" class="text-slate-400 hover:text-red-500">
+            <img src="https://unpkg.com/lucide-static@1.44.0/icons/trash-2.svg" class="w-4 h-4" width="16" height="16" alt="">
+          </button>
+        </div>
+        <div class="mt-4 space-y-2 text-sm">
+          <p class="text-slate-500"><span class="text-slate-400">CNP:</span> <span class="font-mono text-xs">${esc(p.cnp||'—')}</span></p>
+          <p class="text-slate-500"><span class="text-slate-400">Serie:</span> ${esc(p.seria\vert \vert '—')} ${esc(p.numar||'')}</p>
+          <p class="text-slate-500"><span class="text-slate-400">Adresă:</span> ${esc(p.address||'—')}</p>
+          <p class="text-slate-500"><span class="text-slate-400">Telefon:</span> ${esc(p.phone||'—')}</p>
+          <p class="text-slate-500"><span class="text-slate-400">Ocupație:</span> ${esc(p.occupation||'—')}</p>
+          <p class="text-slate-500"><span class="text-slate-400">Sport:</span> ${esc(p.sport||'—')}</p>
+          ${p.diagnosis ? `<p class="text-slate-500 pt-2 border-t border-slate-100"><span class="text-slate-400">Diagnostic:</span> ${esc(p.diagnosis)}</p>` : ''}
+        </div>
+        <div class="mt-4 pt-3 border-t border-slate-100">
+          <p class="text-xs font-bold text-slate-600 mb-1.5 flex items-center gap-1.5">
+            <img src="https://unpkg.com/lucide-static@1.44.0/icons/shield-check.svg" class="w-3.5 h-3.5 text-emerald-600" width="14" height="14" alt=""> GDPR
+          </p>
+          ${p.gdpr && p.gdpr.accepted ? `
+            <p class="text-xs text-emerald-700 bg-emerald-50 rounded-lg p-2.5 leading-relaxed">
+              ✓ Consimțământ semnat digital de <b>${esc(p.gdpr.name\vert \vert '—')}</b> la ${fmtDate(new Date(p.gdpr.date).getTime())}.
+            </p>` : '<p class="text-xs text-amber-600">Lipsă consimțământ.</p>'}
+        </div>
+      </div>
+
+      ${last ? `
+      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        <h4 class="font-bold text-slate-900 text-sm mb-2">Ultima evaluare</h4>
+        <p class="text-xs text-slate-500">${esc(FORMS[last.form]?.title\vert \vert last.form)} · ${fmtDate(last.date)} · ${esc(last.stage||'')}</p>
+        <div class="mt-2 flex items-end gap-2">
+          <p class="text-3xl font-extrabold text-teal-700">${last.score}</p>
+          <p class="text-sm text-slate-400 pb-1">${last.form==='lefs'?'/80':last.form==='quickdash'||last.form==='odi'||last.form==='ndi'?'/100':last.form==='nps'?'/10':''}</p>
+        </div>
+        <p class="text-xs text-slate-500 mt-2 bg-slate-50 rounded-lg p-2.5">${esc(last.interpretation||'')}</p>
+      </div>` : ''}
+
+      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        <button onclick="nav('newAssessment',{patientId:'${p.id}'})" class="w-full bg-teal-600 hover:bg-teal-700 text-white text-sm font-semibold py-2.5 rounded-xl transition">+ Evaluare nouă</button>
+      </div>
+    </div>
+
+    <!-- COLONA DREAPTA: ISTORIC + PLAN -->
+    <div class="lg:col-span-2 space-y-4">
+      <!-- PLAN TERAPEUTIC / INSTRUCȚIUNI KINETO -->
+      <div class="bg-white rounded-2xl border-2 ${plan?'border-teal-300':'border-slate-200'} shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+          <h3 class="font-bold text-slate-900 flex items-center gap-2">
+            <img src="https://unpkg.com/lucide-static@1.44.0/icons/clipboard-list.svg" class="w-5 h-5 text-teal-600" width="20" height="20" alt=""> Plan terapeutic
+          </h3>
+          <span class="text-xs bg-teal-50 text-teal-700 font-semibold px-2.5 py-1 rounded-full">Vizibil pentru kineto</span>
+        </div>
+        <div class="p-5">
+          ${plan ? `
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">Protocol</p>
+            <p class="text-sm font-semibold text-slate-800 mb-3">${esc(plan.protocol||'Plan individualizat')}</p>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Proceduri recomandate</p>
+            <ul class="space-y-1.5 mb-4">
+              ${plan.procedures.map(id=>{
+                const pr = PROCEDURES.find(x=>x.id===id);
+                return pr ? `<li class="flex items-start gap-2 text-sm text-slate-700">
+                  <img src="https://unpkg.com/lucide-static@1.44.0/icons/check-circle-2.svg" class="w-4 h-4 text-teal-600 mt-0.5" width="16" height="16" alt="">
+                  <span><b>${esc(pr.label)}</b> <span class="text-xs text-slate-400">— ${esc(pr.hint)}</span></span>
+                </li>` : '';
+              }).join('')}
+            </ul>
+            ${plan.instructions ? `
+              <p class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">Instrucțiuni pentru kineto</p>
+              <p class="text-sm text-slate-700 bg-slate-50 rounded-xl p-3 leading-relaxed">${esc(plan.instructions)}</p>` : ''}
+            <div class="mt-4 flex gap-2 flex-wrap">
+              <button onclick="showPlanEditor('${p.id}')" class="text-xs font-semibold text-teal-700 border border-teal-200 hover:bg-teal-50 px-3 py-1.5 rounded-lg transition">Modifică planul</button>
+              <button onclick="generateReport('${p.id}')" class="text-xs font-semibold text-teal-700 border border-teal-200 hover:bg-teal-50 px-3 py-1.5 rounded-lg transition">Raport medic</button>
+            </div>
+          ` : `
+            <div class="text-center py-6">
+              <p class="text-sm text-slate-500">Niciun plan terapeutic încă.</p>
+              <p class="text-xs text-slate-400 mt-1">Creează planul din evaluarea unui pacient sau direct aici.</p>
+              <button onclick="showPlanEditor('${p.id}')" class="mt-3 inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition">
+                <img src="https://unpkg.com/lucide-static@1.44.0/icons/plus.svg" class="w-4 h-4 brightness-0 invert" width="16" height="16" alt=""> Creează planul
+              </button>
+            </div>`}
+        </div>
+      </div>
+
+      <!-- ISTORIC DEVIĂRI -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 class="font-bold text-slate-900">Istoric evaluări</h3>
+          <span class="text-xs bg-slate-100 text-slate-500 font-semibold px-2.5 py-1 rounded-full">${list.length}</span>
+        </div>
+        ${list.length===0 ? `
+        <div class="p-10 text-center text-slate-400">
+          <p class="text-sm font-semibold">Nicio evaluare încă</p>
+          <p class="text-xs mt-1">Folosește „+ Evaluare nouă” pentru a începe.</p>
+        </div>` :
+        `<div class="divide-y divide-slate-100">
+          ${[...list].reverse().map(a=>{
+            const f = FORMS[a.form] || {};
+            return `<div class="p-4 hover:bg-slate-50/60 transition flex flex-wrap gap-3 items-center">
+              <div class="w-10 h-10 rounded-xl bg-teal-50 flex items-center justify-center shrink-0">
+                <img src="https://unpkg.com/lucide-static@1.44.0/icons/${a.form==='vas'||a.form==='lefs'?'activity':a.form==='nps'?'star':'file-text'}.svg" class="w-5 h-5 text-teal-600" width="20" height="20" alt="">
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-semibold">${esc(f.title||a.form)}</p>
+                <p class="text-xs text-slate-400 mt-0.5">${fmtDate(a.date)} · ${esc(a.stage||'')}</p>
+              </div>
+              <div class="text-right">
+                <p class="text-lg font-extrabold text-teal-700">${a.score}</p>
+                <p class="text-[11px] text-slate-400">${a.form==='lefs'?'/80':a.form==='quickdash'||a.form==='odi'||a.form==='ndi'?'/100':a.form==='nps'?'/10':''}</p>
+              </div>
+              <p class="w-full text-xs text-slate-500 bg-slate-50 rounded-lg p-2">${esc(a.interpretation||'')}</p>
+            </div>`;
+          }).join('')}
+        </div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+function deletePatient(id){
+  DB.patients = DB.patients.filter(p=>p.id!==id);
+  DB.assessments = DB.assessments.filter(a=>a.patientId!==id);
+  saveDB();
+  nav('patients');
+}
+
+/* ---------- EDITORUL DE PLAN (modal inline) ---------- */
+function showPlanEditor(patientId){
+  const p = getPatient(patientId);
+  if(!p) return;
+  const suggested = suggestPlan(p.diagnosis);
+  const current = p.plan || suggested;
+  const app = document.getElementById('app');
+  app.innerHTML = `
+  <div class="max-w-3xl mx-auto">
+    <div class="bg-white rounded-2xl border-2 border-teal-300 shadow-md overflow-hidden">
+      <div class="p-5 border-b border-slate-100 flex items-center gap-3">
+        <button onclick="nav('patient',{patientId:'${patientId}'})" class="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center">
+          <img src="https://unpkg.com/lucide-static@1.44.0/icons/arrow-left.svg" class="w-4 h-4" width="16" height="16" alt="">
+        </button>
+        <div>
+          <h3 class="font-bold text-slate-900">Plan terapeutic — ${esc(p.name)}</h3>
+          <p class="text-xs text-slate-500">Match automat pe baza diagnosticului + bifare manuală a procedurilor.</p>
+        </div>
+      </div>
+      <div class="p-5 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Diagnostic (folosit pentru potrivirea automată)</label>
+          <div class="flex gap-2">
+            <input id="planDiag" value="${esc(p.diagnosis||'')}" class="flex-1 px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+            <button onclick="applySuggestion()" class="shrink-0 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 rounded-xl transition">Recomandă automat</button>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Protocol</label>
+          <input id="planProtocol" value="${esc(current.protocol||'')}" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+        </div>
+        <div>
+          <p class="text-xs font-semibold text-slate-600 mb-2">Proceduri recomandate (bifează)</p>
+          <div class="grid gap-2 sm:grid-cols-2">
+            ${PROCEDURES.map(pr=>`
+              <label class="flex items-start gap-3 border border-slate-200 rounded-xl p-3 cursor-pointer hover:bg-teal-50/50 transition">
+                <input type="checkbox" value="${pr.id}" ${current.procedures.includes(pr.id)?'checked':''} class="mt-0.5 accent-teal-600 w-4 h-4 planProc">
+                <span class="text-xs text-slate-700"><b>${esc(pr.label)}</b><br><span class="text-slate-400">${esc(pr.hint)}</span></span>
+              </label>`).join('')}
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Instrucțiuni pentru kineto
+            <button type="button" onclick="voiceInput('planInstr')" class="ml-2 inline-flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-[11px] px-2.5 py-1 rounded-lg transition">
+              <img src="https://unpkg.com/lucide-static@1.44.0/icons/mic.svg" class="w-3.5 h-3.5" width="14" height="14" alt=""> Dictare vocală
+            </button>
+          </label>
+          <textarea id="planInstr" rows="4" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition resize-y">${esc(current.instructions||'')}</textarea>
+        </div>
+        <button onclick="savePlan('${patientId}')" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold py-3 rounded-xl transition shadow-sm">Salvează planul</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function applySuggestion(){
+  const diag = document.getElementById('planDiag').value;
+  const s = suggestPlan(diag);
+  document.getElementById('planProtocol').value = s.protocol;
+  document.getElementById('planInstr').value = s.instructions;
+  document.querySelectorAll('.planProc').forEach(cb=>{ cb.checked = s.procedures.includes(cb.value); });
+}
+
+function savePlan(patientId){
+  const p = getPatient(patientId);
+  if(!p) return;
+  const procs = Array.from(document.querySelectorAll('.planProc:checked')).map(cb=>cb.value);
+  const protocol = document.getElementById('planProtocol').value;
+  const instructions = document.getElementById('planInstr').value;
+  p.plan = { protocol, procedures: procs, instructions, updatedAt: new Date().toISOString() };
+  if(p.diagnosis !== document.getElementById('planDiag').value){
+    p.diagnosis = document.getElementById('planDiag').value;
+  }
+  saveDB();
+  nav('patient', {patientId});
+}
+
+/* =====================================================================
+   EVALUARE NOUĂ
+   ===================================================================== */
+function viewNewAssessment(){
+  const selectId = currentPatientId || '';
+  return `
+  <div class="max-w-2xl mx-auto">
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="p-5 border-b border-slate-100 flex items-center gap-3">
+        <button onclick="nav('patients')" class="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center">
+          <img src="https://unpkg.com/lucide-static@1.44.0/icons/arrow-left.svg" class="w-4 h-4" width="16" height="16" alt="">
+        </button>
+        <div>
+          <h3 class="font-bold text-slate-900">Evaluare nouă</h3>
+          <p class="text-xs text-slate-500">Scor automat + generare plan terapeutic recomandat.</p>
+        </div>
+      </div>
+      <form onsubmit="startAssessment(event)" class="p-5 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Pacient *</label>
+          <select required name="patientId" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition bg-white">
+            <option value="">— selectează —</option>
+            ${DB.patients.map(p=>`<option value="${p.id}" ${p.id===selectId?'selected':''}>${esc(p.name)}</option>`).join('')}
+          </select>
+          ${DB.patients.length===0?'<p class="text-xs text-amber-600 mt-1.5">Mai întâi adaugă un pacient („+ Pacient”).</p>':''}
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Tipul de evaluare *</label>
+          <select required name="form" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition bg-white">
+            ${Object.entries(FORMS).map(([k,f])=>`<option value="${k}">${esc(f.title)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">Momentul evaluării</label>
+          <select name="stage" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-teal-500 outline-none text-sm transition bg-white">
+            <option value="T0">T0 — intrare (inițial)</option>
+            <option value="T1">T1 — mijlocul programului</option>
+            <option value="T2">T2 — finalul programului</option>
+            <option value="T3">T3 — follow-up 30/90 zile</option>
+          </select>
+        </div>
+        <button type="submit" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold py-3 rounded-xl transition shadow-sm" ${DB.patients.length===0?'disabled class="opacity-50 cursor-not-allowed"':''}>
+          Continuă către formular
+        </button>
+      </form>
+    </div>
+  </div>`;
+}
+
+function startAssessment(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const form = fd.get('form');
+  currentPatientId = fd.get('patientId');
+  currentForm = form;
+  currentAssessment = {
+    id: uid('a'),
+    patientId: currentPatientId,
+    form,
+    stage: fd.get('stage') || 'T0',
+    date: Date.now(),
+    answers: null,
+    score: null,
+    interpretation: ''
+  };
+  nav('assessment');
+}
+
+/* ---------- FORMULAR EVALUARE ---------- */
+function viewAssessment(){
+  const p = getPatient(currentPatientId);
+  const f = FORMS[currentForm];
+  if(!p || !f) return '<div class="text-center py-12 text-slate-400">Selectează mai întâi pacientul.</div>';
+
+  let body = '';
+  if(currentForm==='vas'){
+    body = `<div class="space-y-6">` + f.items.map((label,i)=>`
+      <div class="bg-slate-50 rounded-xl p-4">
+        <p class="text-sm font-semibold text-slate-700 mb-3">${esc(label)}</p>
+        <input type="range" min="0" max="10" step="1" value="0" class="w-full accent-teal-600" data-vas="${i}" oninput="vasSlider(this)">
+        <div class="flex justify-between text-xs text-slate-400 mt-1"><span>0 — fără durere</span><span>10 — maximă</span></div>
+        <p class="text-center text-2xl font-extrabold text-teal-700 mt-2"><span data-vas-val="${i}">0</span>/10</p>
+      </div>`).join('') + `</div>`;
+  } else {
+    body = f.items.map((item,i)=>`
+      <div class="bg-white border border-slate-200 rounded-xl p-4">
+        <p class="text-sm font-bold text-slate-800 mb-3">${esc(item)}</p>
+        <div class="flex flex-wrap gap-2">
+          ${Array.from({length: f.max+1}, (_, j)=>`
+            <label class="flex flex-col items-center gap-1 cursor-pointer">
+              <input type="radio" name="q${i}" value="${j}" class="peer sr-only" onchange="calcLive()">
+              <span class="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-sm font-semibold text-slate-600 peer-checked:bg-teal-600 peer-checked:text-white peer-checked:border-teal-600 transition hover:border-teal-400">${j}</span>
+              <span class="text-[10px] text-slate-400">${j===f.max?'max':j===0?'min':''}</span>
+            </label>`).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  return `
+  <div class="max-w-3xl mx-auto">
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="p-5 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 class="font-bold text-slate-900">${esc(f.title)}</h3>
+          <p class="text-xs text-slate-500 mt-0.5">${esc(p.name)} · ${esc(currentAssessment.stage)} · ${fmtDate(Date.now())}</p>
+        </div>
+        <span class="text-xs font-semibold bg-teal-50 text-teal-700 px-3 py-1.5 rounded-full">Scor: <span id="liveScore">—</span></span>
+      </div>
+      <div class="p-5">
+        <p class="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 mb-5 leading-relaxed">${esc(f.intro)}</p>
+
+        <!-- Diagnostic + plan recomandat -->
+        <div class="mb-5 bg-teal-50/60 border border-teal-200 rounded-xl p-4">
+          <p class="text-xs font-bold text-teal-800 uppercase tracking-wide mb-2">🧠 Plan terapeutic recomandat (match automat)</p>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <div class="sm:col-span-2">
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Diagnostic (precompletat din dosar)</label>
+              <input id="assDiag" value="${esc(p.diagnosis||'')}" class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-teal-500 outline-none text-sm transition">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Protocol</label>
+              <input id="assProtocol" class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-teal-500 outline-none text-sm transition" readonly>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Proceduri (bifează)</label>
+              <div id="assProcs" class="bg-white rounded-lg border border-slate-200 p-2 max-h-32 overflow-y-auto"></div>
+            </div>
+          </div>
+          <button type="button" onclick="applySuggestionAssessment()" class="mt-3 text-xs font-semibold text-teal-700 bg-white border border-teal-300 hover:bg-teal-50 px-3 py-1.5 rounded-lg transition">Recomandă automat pe baza diagnosticului</button>
+        </div>
+
+        <form id="assessmentForm" class="space-y-4">
+          ${body}
+          <div class="sticky bottom-4 pt-4 flex gap-3">
+            <button type="button" onclick="nav('newAssessment')" class="flex-1 border border-slate-300 text-slate-600 font-semibold py-3 rounded-xl hover:bg-slate-50 transition">Anulează</button>
+            <button type="submit" class="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-semibold py-3 rounded-xl transition shadow-sm">Salvează evaluarea + planul</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>`;
+}
+
+function applySuggestionAssessment(){
+  const diag = document.getElementById('assDiag').value;
+  const s = suggestPlan(diag);
+  document.getElementById('assProtocol').value = s.protocol;
+  const wrap = document.getElementById('assProcs');
+  wrap.innerHTML = PROCEDURES.map(pr=>`
+    <label class="flex items-center gap-2 px-1.5 py-1 text-xs cursor-pointer hover:bg-slate-50 rounded">
+      <input type="checkbox" value="${pr.id}" ${s.procedures.includes(pr.id)?'checked':''} class="accent-teal-600 w-3.5 h-3.5">
+      <span class="text-slate-700">${esc(pr.label)}</span>
+    </label>`).join('');
+}
+
+function vasSlider(el){
+  const val = el.value, key = el.dataset.vas;
+  document.querySelectorAll(`[data-vas-val="${key}"]`).forEach(s=>s.textContent = val);
+  calcLive();
+}
+
+function calcLive(){
+  const form = document.getElementById('assessmentForm');
+  if(!form) return;
+  const f = FORMS[currentForm];
+  let answers = [];
+  if(currentForm==='vas'){
+    answers = f.items.map((_,i)=>{
+      const el = form.querySelector(`[data-vas="${i}"]`);
+      return el ? parseInt(el.value) : 0;
+    });
+  } else {
+    for(let i=0;i<f.items.length;i++){
+      const el = form.querySelector(`input[name="q${i}"]:checked`);
+      answers.push(el ? parseInt(el.value) : -1);
+    }
+  }
+  const done = answers.every(a=>a>=0);
+  const live = document.getElementById('liveScore');
+  if(done){
+    const r = f.calculate(answers);
+    live.textContent = r.score;
+    currentAssessment.answers = answers;
+    currentAssessment.score = r.score;
+    currentAssessment.interpretation = r.interpretation;
+  } else live.textContent = '—';
+}
+
+document.addEventListener('submit', function(e){
+  if(e.target && e.target.id === 'assessmentForm'){
+    e.preventDefault();
+    calcLive();
+    if(!currentAssessment.answers){ alert('Completează toate câmpurile formularului.'); return; }
+    // Salvare evaluare
+    DB.assessments.push(currentAssessment);
+    // Salvare/actualizare plan terapeutic
+    const p = getPatient(currentPatientId);
+    if(p){
+      const procs = Array.from(document.querySelectorAll('#assProcs input:checked')).map(cb=>cb.value);
+      const protocol = document.getElementById('assProtocol').value;
+      const diag = document.getElementById('assDiag').value;
+      if(diag && diag !== p.diagnosis) p.diagnosis = diag;
+      p.plan = {
+        protocol: protocol || 'Plan individualizat',
+        procedures: procs.length ? procs : ['kine','ex','educ'],
+        instructions: p.plan && p.plan.instructions ? p.plan.instructions : suggestPlan(diag).instructions,
+        updatedAt: new Date().toISOString()
+      };
+    }
+    saveDB();
+    nav('patient', {patientId: currentPatientId});
+  }
+});
+
+/* =====================================================================
+   EXPORT / ColMed
+   ===================================================================== */
+function viewExport(){
+  return `
+  <div class="max-w-3xl mx-auto space-y-4">
+    <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+      <h3 class="font-bold text-slate-900 text-lg">Export date — pentru ColMed / Excel</h3>
+      <p class="text-sm text-slate-500 mt-1 leading-relaxed">CSV-ul se importă în ColMed azi (sau Excel/Google Sheets). JSON-ul este formatul gata de trimis spre un API REST (viitor conector ColMed).</p>
+      <div class="mt-4 grid gap-3 sm:grid-cols-3">
+        <button onclick="exportCSV('patients')" class="inline-flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-semibold px-4 py-3 rounded-xl transition shadow-sm">
+          <img src="https://unpkg.com/lucide-static@1.44.0/icons/file-down.svg" class="w-4 h-4 brightness-0 invert" width="16" height="16" alt=""> Pacienți CSV
+        </button>
+        <button onclick="exportCSV('assessments')" class="inline-flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-semibold px-4 py-3 rounded-xl transition shadow-sm">
+          <img src="https://unpkg.com/lucide-static@1.44.0/icons/file-down.svg" class="w-4 h-4 brightness-0 invert" width="16" height="16" alt=""> Evaluări CSV
+        </button>
+        <button onclick="exportJSON()" class="inline-flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold px-4 py-3 rounded-xl transition shadow-sm">
+          <img src="https://unpkg.com/lucide-static@1.44.0/icons/code.svg" class="w-4 h-4 brightness-0 invert" width="16" height="16" alt=""> Planuri JSON (API)
+        </button>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+      <h3 class="font-bold text-slate-900 text-lg">🔌 Integrare ColMed — pași</h3>
+      <div class="mt-3 space-y-3 text-sm text-slate-600">
+        <div class="flex gap-3 bg-slate-50 rounded-xl p-3.5">
+          <span class="text-xl shrink-0">1️⃣</span>
+          <p><b>Acum:</b> export CSV → import în ColMed (panoul de import al softului). Structura include CNP, nume, diagnostic și scoruri.</p>
+        </div>
+        <div class="flex gap-3 bg-slate-50 rounded-xl p-3.5">
+          <span class="text-xl shrink-0">2️⃣</span>
+          <p><b>Planul terapeutic:</b> la salvarea evaluării, planul (protocol + proceduri + instrucțiuni kineto) este salvat în dosarul pacientului. Din exportul JSON, acesta devine payload-ul „plan terapeutic” ce se va putea trimite automat către ColMed după consult.</p>
+        </div>
+        <div class="flex gap-3 bg-slate-50 rounded-xl p-3.5">
+          <span class="text-xl shrink-0">3️⃣</span>
+          <p><b>Viitor:</b> când vei avea acces la API-ul ColMed, înlocuim butonul „Export JSON” cu „Sincronizează cu ColMed” — același payload, trimis prin API REST cu autentificare.</p>
+        </div>
+        <div class="flex gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-amber-800">
+          <span class="text-xl shrink-0">💡</span>
+          <p><b>Sfat:</b> cere echipei ColMed documentația API și confirmă dacă acceptă import CSV sau API REST. Structura datelor pe care o exportăm este deja pregătită pentru ambele variante.</p>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function csvCell(v){ return '"' + String(v==null?'':v).replace(/"/g,'""') + '"'; }
+function exportCSV(type){
+  const nl = '\r\n';
+  let csv='';
+  if(type==='patients'){
+    csv = 'id,nume,cnp,serie,numar,data_nastere,sex,adresa,telefon,email,ocupatie,sport,diagnostic,gdpr_acceptat,gdpr_semnatura,gdpr_data,protocol,proceduri,instrucțiuni_kineto' + nl;
+    DB.patients.forEach(p=>{
+      const pl = p.plan || {};
+      csv += [p.id, p.name, p.cnp||'', p.seria||'', p.numar||'', p.birthDate||'', p.sex, p.address||'', p.phone||'', p.email||'', p.occupation||'', p.sport||'', p.diagnosis||'', p.gdpr&&p.gdpr.accepted?'DA':'NU', p.gdpr?p.gdpr.name:'', p.gdpr?p.gdpr.date:'', pl.protocol||'', (pl.procedures||[]).join('|'), pl.instructions||''].map(csvCell).join(',') + nl;
+    });
+  } else {
+    csv = 'id,pacient_id,pacient_nume,formular,data,stadiu,scor,interpretare' + nl;
+    DB.assessments.forEach(a=>{
+      const p = getPatient(a.patientId);
+      csv += [a.id, a.patientId, p?p.name:'', (FORMS[a.form]?FORMS[a.form].title:''), new Date(a.date).toISOString(), a.stage||'', a.score??'', a.interpretation||''].map(csvCell).join(',') + nl;
+    });
+  }
+  downloadFile(csv, 'msk_pro_' + type + '_' + new Date().toISOString().slice(0,10) + '.csv', 'text/csv;charset=utf-8;');
+}
+
+function exportJSON(){
+  const payload = DB.patients.map(p=>{
+    const pl = p.plan || {};
+    return {
+      patient: { id: p.id, name: p.name, cnp: p.cnp, birthDate: p.birthDate, sex: p.sex, phone: p.phone, occupation: p.occupation, diagnosis: p.diagnosis },
+      gdpr: p.gdpr,
+      therapeuticPlan: { protocol: pl.protocol||'', procedures: pl.procedures||[], instructions: pl.instructions||'' },
+      assessments: getAssessments(p.id).map(a=>({ form: a.form, stage: a.stage, date: a.date, score: a.score, interpretation: a.interpretation }))
+    };
+  });
+  downloadFile(JSON.stringify(payload, null, 2), 'msk_pro_colmed_' + new Date().toISOString().slice(0,10) + '.json', 'application/json');
+}
+
+function downloadFile(content, filename, mime){
+  const blob = new Blob([content], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url); a.remove();},100);
+}
+
+/* ---------- RAPORT MEDIC ---------- */
+function generateReport(patientId){
+  const p = getPatient(patientId);
+  if(!p) return;
+  const list = getAssessments(patientId);
+  const last = list[list.length-1];
+  const pl = p.plan;
+  const lines = [
+    'RAPORT DE RECUPERARE MEDICALĂ',
+    'Către: Dr. [Nume medic] | Specialitate: [ortopedie / medicină de familie]',
+    'De la: [Nume clinică] | [Nume medic coordonator] | Data: ' + new Date().toLocaleDateString('ro-RO'),
+    '',
+    'PACIENT',
+    'Nume: ' + p.name + ' | CNP: ' + (p.cnp||'—') + ' | Diagnostic: ' + (p.diagnosis||'—'),
+    '',
+    'PLAN TERAPEUTIC',
+    'Protocol: ' + (pl?pl.protocol:'—'),
+    'Proceduri: ' + (pl ? pl.procedures.map(id=>{ const pr=PROCEDURES.find(x=>x.id===id); return pr?pr.label:id; }).join(', ') : '—'),
+    'Instrucțiuni kineto: ' + (pl && pl.instructions ? pl.instructions : '—'),
+    ''
+  ];
+  if(last){
+    lines.push('EVALUARE RECENTĂ (' + last.stage + ') — ' + (FORMS[last.form]?FORMS[last.form].title:'')),
+    lines.push('Data: ' + fmtDate(last.date)),
+    lines.push('Scor: ' + last.score + ' | Interpretare: ' + last.interpretation),
+    lines.push('');
+  }
+  lines.push('RECOMANDĂRI');
+  lines.push('☐ Program de menținere (1×/săptămână)');
+  lines.push('☐ Autonomie cu program de exerciții la domiciliu');
+  lines.push('☐ Reevaluare la 30/90 de zile');
+  lines.push('☐ Altele: ______');
+  lines.push('');
+  lines.push('Semnătura și ștampila medicului coordonator: ______');
+  const text = lines.join('\n');
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(toastCopied).catch(()=>showReport(text));
+  } else showReport(text);
+}
+
+function showReport(text){
+  const w = window.open('','_blank','width=620,height=640');
+  if(w){ w.document.write('<pre style="font-family:monospace;font-size:13px;padding:20px;white-space:pre-wrap">' + esc(text) + '</pre>'); w.document.close(); }
+  else alert('Copiază raportul:\n\n' + text);
+}
+function toastCopied(){
+  const t = document.createElement('div');
+  t.textContent = 'Raportul a fost copiat în clipboard. Lipește-l în Word/Google Docs.';
+  t.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg z-50';
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(),3500);
+}
+
+/* ---------- INIT ---------- */
+render();
+</script>
+</body>
+</html>
